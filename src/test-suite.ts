@@ -108,7 +108,7 @@ async function runTests() {
     adminId = admin._id.toString();
 
     // Generate valid admin token via utility
-    const { generateToken } = await import("../src/utils/jwt");
+    const { generateToken } = await import("../src/utils/jwt.js");
     adminToken = generateToken({
       userId: adminId,
       email: admin.email,

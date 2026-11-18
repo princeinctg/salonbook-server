@@ -91,8 +91,14 @@ export function createApp() {
   return app;
 }
 
-// Server startup if run directly
-if (require.main === module) {
+// Server startup if run directly or via tsx/node
+if (
+  require.main === module ||
+  process.argv[1]?.includes("src/index.ts") ||
+  process.argv[1]?.includes("src\\index.ts") ||
+  process.argv[1]?.endsWith("index.ts") ||
+  process.argv[1]?.endsWith("index.js")
+) {
   const app = createApp();
   connectDB()
     .then(() => {
