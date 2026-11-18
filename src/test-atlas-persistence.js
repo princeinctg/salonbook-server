@@ -46,8 +46,10 @@ async function testAtlasRealWorld() {
 
   // 4. Customer Booking Appointment in Atlas
   console.log(`[Atlas Step 4] Submitting appointment for service: ${chosenService.serviceName}...`);
-  const apptDate = "2026-12-20";
-  const apptSlot = "11:00 AM";
+  const randomDay = 10 + Math.floor(Math.random() * 18);
+  const apptDate = `2026-12-${randomDay}`;
+  const slotOptions = ["09:00 AM", "10:00 AM", "11:00 AM", "01:00 PM", "02:00 PM", "03:00 PM", "04:00 PM"];
+  const apptSlot = slotOptions[Math.floor(Math.random() * slotOptions.length)];
   const bookRes = await fetch(`${base}/appointments`, {
     method: "POST",
     headers: {
