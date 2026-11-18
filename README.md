@@ -36,12 +36,38 @@ JWT_SECRET=your_jwt_secret
 JWT_EXPIRES_IN=7d
 GOOGLE_CLIENT_ID=your_google_client_id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=your_google_client_secret
+# Must match Google Cloud Console > APIs & Services > Credentials
+# > OAuth 2.0 Client > Authorized redirect URIs exactly.
+GOOGLE_REDIRECT_URI=http://localhost:3000/api/auth/callback/google
 STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key
 STRIPE_WEBHOOK_SECRET=whsec_your_stripe_webhook_secret
 IMGBB_API_KEY=your_imgbb_api_key
 CLIENT_URL=http://localhost:3000
 SERVER_URL=http://localhost:5000
 ```
+
+---
+
+## Google OAuth Configuration
+In Google Cloud Console → **APIs & Services → Credentials → OAuth 2.0 Client**, configure:
+
+- **Authorized JavaScript origins**
+  - `http://localhost:3000`
+  - `https://your-frontend.vercel.app` (production)
+- **Authorized redirect URIs**
+  - `http://localhost:3000/api/auth/callback/google`
+  - `https://your-frontend.vercel.app/api/auth/callback/google` (production)
+
+`GOOGLE_REDIRECT_URI` must be identical to the URI used locally/production. Google rejects
+any mismatch with `Error 400: redirect_uri_mismatch`. The frontend sends the user to
+`GET /api/auth/google?returnTo=<frontend-origin>`; the backend redirects to Google, and
+Google returns the code to the client callback route above. That route forwards the code
+to `GET /api/auth/google/callback`, which exchanges it, creates/links the MongoDB user,
+issues the JWT, and redirects to `/sign-in?token=...` so the client can persist the session.
+
+The direct API callback (`http://localhost:5000/api/auth/google/callback`) also exists at
+`/api/auth/callback/google`, but it only works if that exact URI is registered on the same
+OAuth client.
 
 ---
 

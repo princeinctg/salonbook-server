@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { User } from "../models/user.model";
@@ -148,10 +149,82 @@ export async function signIn(req: Request, res: Response): Promise<void> {
   }
 }
 
-export function resolveGoogleCallbackUrl(req: Request): string {
-  const host = req.headers["x-forwarded-host"] || req.get("host") || "localhost:5000";
-  const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
-  return `${protocol}://${host}/api/auth/google/callback`;
+/**
+ * The redirect URI sent to Google must EXACTLY match an "Authorized redirect URI"
+ * configured in the Google Cloud Console, and it must be identical on both the
+ * authorization request and the token exchange. It is therefore resolved from
+ * configuration instead of the incoming request host (which previously produced
+ * http://localhost:5000/api/auth/google/callback and triggered
+ * "Error 400: redirect_uri_mismatch").
+ */
+export function resolveGoogleCallbackUrl(_req?: Request): string {
+  const configured = ENV.GOOGLE_REDIRECT_URI.trim();
+  // Do NOT normalise this value (no trailing-slash stripping): Google requires
+  // the redirect_uri to match the Console entry byte-for-byte.
+  if (configured) return configured;
+  // Default to the client-app callback route that is actually registered in the
+  // Google Cloud Console. It proxies the code to this API. See
+  // salonbook-client/src/app/api/auth/callback/google/route.ts.
+  return `${ENV.CLIENT_URL.replace(/\/+$/, "")}/api/auth/callback/google`;
+}
+
+/** Only allow the browser to be sent back to the configured SalonBook client. */
+function resolveClientOrigin(candidate?: string): string {
+  const fallback = ENV.CLIENT_URL.replace(/\/+$/, "");
+  try {
+    const url = new URL(candidate || fallback);
+    const defaultOrigin = new URL(fallback).origin;
+    const isLocalDev =
+      ENV.NODE_ENV !== "production" &&
+      (url.hostname === "localhost" || url.hostname === "127.0.0.1") &&
+      (url.port === "3000" || url.port === "");
+    return url.origin === defaultOrigin || isLocalDev ? url.origin : defaultOrigin;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Only allow internal dashboard paths as a post-login destination. */
+function resolveRedirectPath(candidate?: string, role?: string): string {
+  if (candidate && candidate.startsWith("/") && !candidate.startsWith("//")) {
+    return candidate;
+  }
+  return role === "admin" ? "/dashboard/admin" : "/dashboard/customer";
+}
+
+/**
+ * State is HMAC-signed with the server's JWT secret so the callback can prove
+ * the returnTo/redirect values were issued by this server (CSRF / open-redirect
+ * protection). The payload itself is not secret.
+ */
+function signGoogleState(payload: { returnTo: string; redirect: string }): string {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", ENV.JWT_SECRET).update(body).digest("base64url");
+  return `${body}.${signature}`;
+}
+
+function verifyGoogleState(rawState: string): { returnTo?: string; redirect?: string } | null {
+  const parts = rawState.split(".");
+  if (parts.length !== 2) return null;
+  const [body, signature] = parts;
+  if (!body || !signature) return null;
+
+  const expected = crypto.createHmac("sha256", ENV.JWT_SECRET).update(body).digest("base64url");
+  const providedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (
+    providedBuffer.length !== expectedBuffer.length ||
+    !crypto.timingSafeEqual(providedBuffer, expectedBuffer)
+  ) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf-8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -160,15 +233,17 @@ export function resolveGoogleCallbackUrl(req: Request): string {
 export function googleRedirect(req: Request, res: Response): void {
   const rootUrl = "https://accounts.google.com/o/oauth2/v2/auth";
 
-  const returnClientUrl = (req.query.returnTo as string) || ENV.CLIENT_URL;
-  const redirectPath = (req.query.redirect as string) || "/dashboard/customer";
+  const returnClientUrl = resolveClientOrigin((req.query.returnTo as string) || ENV.CLIENT_URL);
+  const requestedRedirect = typeof req.query.redirect === "string" ? req.query.redirect : "";
+  const redirectPath =
+    requestedRedirect.startsWith("/") && !requestedRedirect.startsWith("//")
+      ? requestedRedirect
+      : "";
 
-  const stateParam = Buffer.from(
-    JSON.stringify({
-      returnTo: returnClientUrl,
-      redirect: redirectPath,
-    })
-  ).toString("base64");
+  const stateParam = signGoogleState({
+    returnTo: returnClientUrl,
+    redirect: redirectPath,
+  });
 
   const callbackUri = resolveGoogleCallbackUrl(req);
 
@@ -193,17 +268,33 @@ export async function googleCallback(req: Request, res: Response): Promise<void>
   const code = req.query.code as string;
   const rawState = req.query.state as string;
 
-  let returnClient = ENV.CLIENT_URL;
-  let redirectPath = "/dashboard/customer";
+  let returnClient = ENV.CLIENT_URL.replace(/\/+$/, "");
+  let redirectPath = "";
 
-  if (rawState) {
-    try {
-      const parsed = JSON.parse(Buffer.from(rawState, "base64").toString("utf-8"));
-      if (parsed.returnTo) returnClient = parsed.returnTo;
-      if (parsed.redirect) redirectPath = parsed.redirect;
-    } catch {
-      // Ignore parse failure, use defaults
-    }
+  // Verify the authorization response carries the state we issued.
+  if (!rawState) {
+    res.redirect(`${returnClient}/sign-in?error=${encodeURIComponent("Invalid Google OAuth state. Please try signing in again.")}`);
+    return;
+  }
+
+  const parsedState = verifyGoogleState(rawState);
+  if (!parsedState) {
+    res.redirect(`${returnClient}/sign-in?error=${encodeURIComponent("Invalid Google OAuth state. Please try signing in again.")}`);
+    return;
+  }
+
+  if (parsedState.returnTo) returnClient = resolveClientOrigin(parsedState.returnTo);
+  if (parsedState.redirect && typeof parsedState.redirect === "string") {
+    redirectPath = parsedState.redirect;
+  }
+
+  // Google reports user cancellation/consent errors back on the redirect URI.
+  const oauthError = typeof req.query.error === "string" ? req.query.error : "";
+  if (oauthError) {
+    const description =
+      typeof req.query.error_description === "string" ? req.query.error_description : oauthError;
+    res.redirect(`${returnClient}/sign-in?error=${encodeURIComponent(description)}`);
+    return;
   }
 
   if (!code) {
@@ -244,9 +335,9 @@ export async function googleCallback(req: Request, res: Response): Promise<void>
     });
 
     const profileData = await profileRes.json();
-    if (!profileRes.ok || !profileData.email) {
+    if (!profileRes.ok || !profileData.email || profileData.email_verified === false) {
       console.error("[Google OAuth] Profile fetch error:", profileData);
-      res.redirect(`${returnClient}/sign-in?error=Failed+to+fetch+Google+profile`);
+      res.redirect(`${returnClient}/sign-in?error=Failed+to+fetch+a+verified+Google+profile`);
       return;
     }
 
@@ -283,6 +374,9 @@ export async function googleCallback(req: Request, res: Response): Promise<void>
       role: user.role,
     });
 
+    // Send each role to its own dashboard unless an explicit internal path was requested.
+    const destination = resolveRedirectPath(redirectPath, user.role);
+
     // Pass token & user via secure query parameters back to client session receiver
     const userJson = encodeURIComponent(
       JSON.stringify({
@@ -296,7 +390,7 @@ export async function googleCallback(req: Request, res: Response): Promise<void>
       })
     );
 
-    res.redirect(`${returnClient}/sign-in?token=${encodeURIComponent(token)}&user=${userJson}&redirect=${encodeURIComponent(redirectPath)}`);
+    res.redirect(`${returnClient}/sign-in?token=${encodeURIComponent(token)}&user=${userJson}&redirect=${encodeURIComponent(destination)}`);
   } catch (error: any) {
     console.error("[Google OAuth Error]:", error);
     res.redirect(`${returnClient}/sign-in?error=${encodeURIComponent(error.message || "Google authentication failed")}`);

@@ -17,6 +17,10 @@ export const ENV = {
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || "7d",
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || "",
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET || "",
+  // Must exactly match an "Authorized redirect URI" in the Google Cloud Console
+  // on the same OAuth client as GOOGLE_CLIENT_ID. Defaults to the client-app
+  // callback bridge (src/app/api/auth/callback/google/route.ts).
+  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || "",
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || "",
   STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || "",
   IMGBB_API_KEY: process.env.IMGBB_API_KEY || "",
