@@ -53,8 +53,8 @@ export function createApp() {
 
   app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-  // Health route
-  app.get("/health", (req: Request, res: Response) => {
+  // Health routes
+  app.get(["/health", "/api/health"], (req: Request, res: Response) => {
     res.status(200).json({
       status: "ok",
       timestamp: new Date().toISOString(),
