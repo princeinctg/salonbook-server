@@ -68,4 +68,4 @@ SERVER_URL=http://localhost:5000
 ## Deployment Links & Repositories
 - **Server Repository**: https://github.com/princeinctg/salonbook-server
 - **Client Repository**: https://github.com/princeinctg/salonbook-client
-- **Live Server Deployment**: Render / Vercel API
+- **Live Server Deployment**: https://salonbook-client.vercel.app/
